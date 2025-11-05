@@ -14,6 +14,6 @@ cd /n/home00/msong300/conservation
 # module load python/3.x  # Adjust version
 # module load R/4.x       # If needed
 
-# Run the script
-./run_occupancy_nmixture.sh
+# Run the script (absolute path to avoid not found errors)
+/n/home00/msong300/conservation/occupancy_nmixture/run_occupancy_nmixture.sh
 

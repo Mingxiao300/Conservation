@@ -89,7 +89,7 @@ echo "Running occupancy and n-mixture models: occupancy_nmixture_models.py" | te
 echo "Start time: $(date)" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 
-python3 occupancy_nmixture_models.py 2>&1 | tee -a "$LOG_FILE"
+python3 occupancy_nmixture/occupancy_nmixture_models.py 2>&1 | tee -a "$LOG_FILE"
 
 EXIT_CODE=${PIPESTATUS[0]}
 

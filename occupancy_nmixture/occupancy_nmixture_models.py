@@ -42,16 +42,25 @@ np.random.seed(42)
 # Configuration
 # =============================================================================
 
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'outputs')
-OCCUPANCY_DIR = os.path.join(OUTPUT_DIR, 'occupancy_models')
-NMIXTURE_DIR = os.path.join(OUTPUT_DIR, 'nmixture_models')
+# Get parent directory (conservation folder) for data file
+PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUTPUT_DIR = os.path.join(PARENT_DIR, 'outputs')
+BASE_OCCUPANCY_DIR = os.path.join(OUTPUT_DIR, 'occupancy_models')
+BASE_NMIXTURE_DIR = os.path.join(OUTPUT_DIR, 'nmixture_models')
 
-for directory in [OUTPUT_DIR, OCCUPANCY_DIR, NMIXTURE_DIR]:
+# Create timestamped subdirectory for this run
+TIMESTAMP = time.strftime('%Y%m%d_%H%M%S')
+RUN_ID = f"run_{TIMESTAMP}"
+OCCUPANCY_DIR = os.path.join(BASE_OCCUPANCY_DIR, RUN_ID)
+NMIXTURE_DIR = os.path.join(BASE_NMIXTURE_DIR, RUN_ID)
+
+for directory in [OUTPUT_DIR, BASE_OCCUPANCY_DIR, BASE_NMIXTURE_DIR, OCCUPANCY_DIR, NMIXTURE_DIR]:
     os.makedirs(directory, exist_ok=True)
 
 print(f"Output directories created:")
 print(f"  Occupancy models: {OCCUPANCY_DIR}")
 print(f"  N-mixture models: {NMIXTURE_DIR}")
+print(f"  Run ID: {RUN_ID}")
 
 # =============================================================================
 # Data Loading and Preprocessing
@@ -64,7 +73,9 @@ def load_and_preprocess_data():
     print("="*80)
     
     try:
-        data_file = os.path.join(os.path.dirname(__file__), 'protein_full_data.csv')
+        # Get parent directory (conservation folder) for data file
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_file = os.path.join(parent_dir, 'protein_full_data.csv')
         if not os.path.exists(data_file):
             raise FileNotFoundError(f"Data file not found: {data_file}")
         
@@ -1379,6 +1390,94 @@ def save_detailed_coefficient_table(protein_coefs, summary, target_protein, mode
         return df_coefs
     return None
 
+def save_full_coefficient_table(idata, feature_names, target_protein, model_type, output_dir):
+    """Save full coefficient table with feature names mapped to beta indices.
+    Includes all fixed effects (excluding random effects) with descriptive statistics.
+    """
+    print(f"\n{'='*80}")
+    print(f"SAVING FULL COEFFICIENT TABLE ({model_type.upper()} MODEL)")
+    print(f"{'='*80}")
+    
+    try:
+        # Get summary for all beta parameters
+        if model_type == 'occupancy':
+            # For occupancy models, we have beta_psi, beta_gamma, beta_epsilon
+            beta_params = ['beta_psi', 'beta_gamma', 'beta_epsilon']
+            param_labels = ['Initial Occupancy (psi)', 'Colonization (gamma)', 'Extinction (epsilon)']
+        else:
+            # For n-mixture models (handles both 'nmixture' and 'n-mixture')
+            beta_params = ['beta']
+            param_labels = ['Fixed Effects']
+        
+        all_coef_rows = []
+        
+        for param, param_label in zip(beta_params, param_labels):
+            try:
+                param_summary = az.summary(idata, var_names=[param])
+                
+                if len(param_summary) > 0:
+                    # Map indices to feature names
+                    for idx, row in param_summary.iterrows():
+                        # Extract index from parameter name (e.g., "beta_psi[0]" -> 0)
+                        match = re.search(r'\[(\d+)\]', str(idx))
+                        if match:
+                            feat_idx = int(match.group(1))
+                            # Get feature name
+                            if feat_idx < len(feature_names):
+                                feature_name = feature_names[feat_idx]
+                            else:
+                                feature_name = f"Feature_{feat_idx}"
+                            
+                            all_coef_rows.append({
+                                'parameter_type': param,
+                                'parameter_label': param_label,
+                                'parameter_index': feat_idx,
+                                'feature_name': feature_name,
+                                'mean': row['mean'],
+                                'sd': row['sd'],
+                                'hdi_3%': row['hdi_3%'] if 'hdi_3%' in row.index else row['hdi_2.5%'],
+                                'hdi_97%': row['hdi_97%'] if 'hdi_97%' in row.index else row['hdi_97.5%'],
+                                'mcse_mean': row.get('mcse_mean', np.nan),
+                                'mcse_sd': row.get('mcse_sd', np.nan),
+                                'ess_bulk': row.get('ess_bulk', np.nan),
+                                'ess_tail': row.get('ess_tail', np.nan),
+                                'r_hat': row.get('r_hat', np.nan),
+                                'target_protein': target_protein,
+                                'model_type': model_type
+                            })
+            except Exception as e:
+                print(f"  ⚠️  Could not extract {param}: {e}")
+                continue
+        
+        if all_coef_rows:
+            df_full_coefs = pd.DataFrame(all_coef_rows)
+            
+            # Sort by parameter type and index
+            df_full_coefs = df_full_coefs.sort_values(['parameter_type', 'parameter_index'])
+            
+            # Save to CSV
+            csv_file = os.path.join(output_dir, f'{model_type}_full_coefficients_{target_protein.replace(" ", "_")}.csv')
+            df_full_coefs.to_csv(csv_file, index=False)
+            print(f"✅ Full coefficient table saved to {csv_file}")
+            print(f"   Total coefficients: {len(df_full_coefs)}")
+            print(f"   Parameter types: {', '.join(df_full_coefs['parameter_type'].unique())}")
+            
+            # Print summary statistics
+            print(f"\n📊 Summary Statistics:")
+            print(f"   Mean |coefficient|: {df_full_coefs['mean'].abs().mean():.4f}")
+            print(f"   Max |coefficient|: {df_full_coefs['mean'].abs().max():.4f}")
+            print(f"   Significant coefficients (HDI excludes 0): {(df_full_coefs['hdi_3%'] > 0).sum() + (df_full_coefs['hdi_97%'] < 0).sum()} / {len(df_full_coefs)}")
+            
+            return df_full_coefs
+        else:
+            print(f"  ⚠️  No coefficients found to save")
+            return None
+    
+    except Exception as e:
+        print(f"  ❌ Error saving full coefficient table: {e}")
+        traceback.print_exc()
+        return None
+
 # =============================================================================
 # Main Execution
 # =============================================================================
@@ -1450,6 +1549,11 @@ def main():
                         )
                     else:
                         print("⚠️  No protein-related features found in model")
+                    
+                    # Save full coefficient table with feature names
+                    save_full_coefficient_table(
+                        occ_idata, occ_data['feature_names'], target_protein, 'occupancy', OCCUPANCY_DIR
+                    )
                 
                 except Exception as e:
                     print(f"⚠️  Could not extract protein relationships: {e}")
@@ -1505,6 +1609,11 @@ def main():
                         )
                     else:
                         print("⚠️  No protein-related features found in model")
+                    
+                    # Save full coefficient table with feature names
+                    save_full_coefficient_table(
+                        nmixture_idata, nmixture_data['feature_names'], target_protein, 'nmixture', NMIXTURE_DIR
+                    )
                 
                 except Exception as e:
                     print(f"⚠️  Could not extract protein relationships: {e}")
